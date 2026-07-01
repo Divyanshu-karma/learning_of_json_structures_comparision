@@ -2248,15 +2248,31 @@ def main():
             all_passed = False
             
     # Include Defect Classification report block
-    from post_comparison import generate_defect_summary
+    from post_comparison import generate_defect_summary, DefectType
     defect_summary_lines = generate_defect_summary(all_classified_failures)
     
     # 4. Write Unified Report
+    # Construct concise Defect Summary block
+    defect_counts = {dt: 0 for dt in DefectType}
+    for f in all_classified_failures:
+        if hasattr(f, "defect_type"):
+            defect_counts[f.defect_type] = defect_counts.get(f.defect_type, 0) + 1
+            
+    defect_summary_sec = [
+        "======================",
+        "DEFECT SUMMARY",
+        "================",
+    ]
+    for dt in DefectType:
+        defect_summary_sec.append(f"{dt.value}: {defect_counts[dt]}")
+
     combined_report = ["GATE 2 UNIFIED COMPARISON REPORT", "="*40, ""]
     combined_report.extend(all_file_reports)
     combined_report.extend(summary_block)
     combined_report.append("")
     combined_report.extend(defect_summary_lines)
+    combined_report.append("")
+    combined_report.extend(defect_summary_sec)
 
     # Required Business Rule: Timestamp-based unique report in comparision_result folder
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2276,6 +2292,8 @@ def main():
     
     if all_classified_failures:
         print("\n" + "\n".join(defect_summary_lines))
+        
+    print("\n" + "\n".join(defect_summary_sec))
 
     if all_passed:
         print("\nOVERALL STATUS: PASS")
