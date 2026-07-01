@@ -635,11 +635,32 @@ def _meaningful_goods_words(norm_text: str) -> set:
     words = re.findall(r"[A-Z0-9]+", norm_text or "")
     return {w for w in words if len(w) > 2 and w not in GOODS_SEMANTIC_STOPWORDS}
 
+GOODS_DOMAIN_GROUPS = { 
+    "food": {"FOOD", "ICE", "CREAM", "BAKERY", "SNACK", "CANDY", "BEVERAGE", "FROZEN"}, 
+    "automotive": {"AUTO", "AUTOMOTIVE", "CAR", "VEHICLE", "DETAILING", "POLISHING"}, 
+    "software": {"SOFTWARE", "APPLICATION", "DOWNLOADABLE", "PLATFORM", "MOBILE"}, 
+    "domain": {"DOMAIN", "REGISTRATION", "HOSTING", "WEBSITE", "WEB"}, 
+    "medical": {"HEALTH", "MEDICAL", "WELLNESS", "PHARMACEUTICAL"}, 
+}
+
+def _dominant_goods_groups(words: set) -> set: 
+    groups = set() 
+    for group, terms in GOODS_DOMAIN_GROUPS.items(): 
+        if words.intersection(terms): 
+            groups.add(group) 
+    return groups
+
 def _semantic_goods_match(n1: str, n2: str) -> Tuple[bool, str]:
     words1 = _meaningful_goods_words(n1)
     words2 = _meaningful_goods_words(n2)
     if not words1 or not words2:
         return False, "No meaningful goods keywords after stopword filtering."
+
+    # Group compatibility check to prevent false positives from generic words
+    groups1 = _dominant_goods_groups(words1)
+    groups2 = _dominant_goods_groups(words2)
+    if groups1 and groups2 and groups1.isdisjoint(groups2):
+        return False, f"Different goods domains: {groups1} vs {groups2}"
 
     overlap = words1.intersection(words2)
     if not overlap:
