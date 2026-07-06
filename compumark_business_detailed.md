@@ -4,7 +4,7 @@
 
 `compumark_business.py` extracts **Business Name** records from CompuMark trademark reports. It parses BUS cards, maps Standard Industrial Classification (SIC) codes to Nice Classes, and invokes an LLM only for ambiguous **SIC 9999** records.
 
-The recent engineering work focused on **resilience and observability**, not feature changes. The extraction logic, JSON schema, business rules, and concurrency model remain unchanged. fileciteturn43file0
+The recent engineering work focused on **resilience and observability**, not feature changes. The extraction logic, JSON schema, business rules, and concurrency model remain unchanged.
 
 ---
 
@@ -12,18 +12,26 @@ The recent engineering work focused on **resilience and observability**, not fea
 
 ```mermaid
 flowchart TD
-    A[CompuMark PDF]
-    B[Business Extractor]
-    C[Parse BUS Cards]
-    D[SIC Lookup]
-    E[SIC != 9999]
-    F[SIC == 9999]
-    G[LLM Enrichment]
-    H[Business_Data JSON]
 
-    A-->B-->C-->D
-    D-->E-->H
-    D-->F-->G-->H
+A[CompuMark PDF]
+B[Business Extractor]
+C[Parse Business Cards]
+D[SIC Lookup]
+E[Standard SIC]
+F[Unresolved SIC]
+G[LLM Enrichment]
+H[Business JSON]
+
+A --> B
+B --> C
+C --> D
+
+D --> E
+D --> F
+
+E --> H
+F --> G
+G --> H
 ```
 
 Most records are resolved deterministically using `SIC_NICE_CROSSWALK`. Only unresolved SIC 9999 records require LLM enrichment.
@@ -36,23 +44,28 @@ Most records are resolved deterministically using `SIC_NICE_CROSSWALK`. Only unr
 
 ```mermaid
 flowchart TD
-    A[Extract Business Record]
-    B[SIC 9999]
-    C[Direct LLM Call]
-    D[Failure]
-    E[logger.error]
-    F[Return {}]
 
-    A-->B-->C-->D-->E-->F
+A[Extract Business Record]
+B[Unresolved SIC]
+C[Direct LLM Call]
+D[Failure]
+E[Basic Logging]
+F[Return Fallback]
+
+A --> B
+B --> C
+C --> D
+D --> E
+E --> F
 ```
 
-The pipeline already protected extraction by returning an empty fallback dictionary when enrichment failed, but production diagnostics were limited.
+The pipeline already protected extraction by returning fallback values when enrichment failed, but production diagnostics were limited.
 
 ---
 
 # Engineering Issues
 
-## Issue 1 – Limited Exception Observability
+## Issue 1 — Limited Exception Observability
 
 ### Previous Behaviour
 
@@ -70,32 +83,36 @@ Although extraction continued safely, production logs lacked the full traceback,
 
 ---
 
-## Issue 2 – No Dedicated Retry Wrapper
+## Issue 2 — No Dedicated Retry Wrapper
 
 The LLM invocation occurred directly inside `_infer_nice_class_via_llm()`.
 
 ```mermaid
 flowchart TD
-    A[LLM Call]
-    B[Success?]
-    C[Return Response]
-    D[Exception]
-    E[Fallback {}]
 
-    A-->B
-    B--Yes-->C
-    B--No-->D-->E
+A[LLM Request]
+B[Execution]
+C[Successful Response]
+D[Exception]
+E[Return Fallback]
+
+A --> B
+
+B --> C
+B --> D
+
+D --> E
 ```
 
 There was no dedicated resilience layer encapsulating retry behaviour.
 
 ---
 
-## Issue 3 – Thread-local Event Loop Documentation
+## Issue 3 — Thread Local Event Loop Documentation
 
 The module intentionally used thread-local event loops for DuckDuckGo searches.
 
-The implementation itself was correct, but the reasoning behind the design was not documented, making future maintenance harder.
+The implementation itself was correct, but the reasoning behind the design was not documented, making future maintenance easier after documentation was added.
 
 ---
 
@@ -103,31 +120,30 @@ The implementation itself was correct, but the reasoning behind the design was n
 
 ## 1. Dedicated LLM Execution Wrapper
 
-A dedicated helper:
+A dedicated helper function was introduced to centralize LLM execution.
 
-```
-_execute_compumark_llm_call()
-```
+The wrapper includes:
 
-was introduced.
+- maximum one retry
+- exponential backoff
+- centralized execution
+- reusable resilience layer
 
-It is decorated with a Tenacity retry policy:
-
-- maximum one retry policy (`stop_after_attempt(1)` as configured)
-- centralized execution path
-- reusable wrapper
-
-Current flow:
+### Current Flow
 
 ```mermaid
 flowchart TD
-    A[Need LLM]
-    B[_execute_compumark_llm_call()]
-    C[Tenacity]
-    D[Azure LLM]
-    E[Response]
 
-    A-->B-->C-->D-->E
+A[Need LLM]
+B[Execution Wrapper]
+C[Retry Policy]
+D[Azure OpenAI]
+E[LLM Response]
+
+A --> B
+B --> C
+C --> D
+D --> E
 ```
 
 This separates resilience concerns from business logic.
@@ -142,20 +158,24 @@ Instead of simple message logging, the module now records complete stack traces 
 logger.exception(...)
 ```
 
-Current behaviour:
+### Current Behaviour
 
 ```mermaid
 flowchart TD
-    A[LLM Exception]
-    B[logger.exception]
-    C[Full Traceback]
-    D[Fallback {}]
-    E[Continue Pipeline]
 
-    A-->B-->C-->D-->E
+A[LLM Exception]
+B[Write Traceback]
+C[Production Logs]
+D[Return Fallback]
+E[Continue Extraction]
+
+A --> B
+B --> C
+C --> D
+D --> E
 ```
 
-Benefits:
+### Benefits
 
 - Complete traceback visibility
 - Easier production debugging
@@ -165,13 +185,9 @@ Benefits:
 
 ## 3. Better Internal Documentation
 
-A descriptive docstring was added to:
+A descriptive docstring was added to the event-loop helper.
 
-```
-_get_or_create_event_loop()
-```
-
-The implementation itself was intentionally left unchanged because the thread-local event-loop design is compatible with the current execution model.
+The implementation itself was intentionally left unchanged because the thread-local event-loop design is already compatible with the existing execution model.
 
 ---
 
@@ -192,15 +208,15 @@ The implementation itself was intentionally left unchanged because the thread-lo
 
 The refinements deliberately avoided functional changes.
 
-Unchanged components include:
+The following remain exactly the same:
 
 - Business parsing logic
 - SIC detection
 - `SIC_NICE_CROSSWALK`
-- ThreadPoolExecutor (`max_workers=3`)
+- ThreadPoolExecutor configuration
 - DuckDuckGo search implementation
 - `sync_search_web()`
-- `_get_or_create_event_loop()` behaviour
+- Event-loop behaviour
 - Azure client creation
 - LLM prompts
 - JSON schema
@@ -217,10 +233,10 @@ Covered scenarios:
 - Successful LLM execution
 - Retry wrapper execution
 - Exception fallback
-- `logger.exception()` verification
+- Traceback logging verification
 - Successful JSON parsing
 
-All resilience tests passed successfully, confirming that reliability improvements did not alter functional behaviour. fileciteturn43file0
+All resilience tests passed successfully, confirming that reliability improvements did not alter functional behaviour.
 
 ---
 
@@ -228,38 +244,108 @@ All resilience tests passed successfully, confirming that reliability improvemen
 
 ```mermaid
 sequenceDiagram
-    participant Controller
-    participant BusinessExtractor
-    participant RetryWrapper
-    participant AzureLLM
 
-    Controller->>BusinessExtractor: Parse BUS Records
-    BusinessExtractor->>BusinessExtractor: SIC Lookup
-    alt SIC != 9999
-        BusinessExtractor-->>Controller: Deterministic Output
-    else SIC == 9999
-        BusinessExtractor->>RetryWrapper: Execute LLM
-        RetryWrapper->>AzureLLM: Request
-        AzureLLM-->>RetryWrapper: Response / Exception
-        RetryWrapper-->>BusinessExtractor: Result or Fallback
-        BusinessExtractor-->>Controller: Final Business JSON
-    end
+participant Controller
+participant Business
+participant Retry
+participant Azure
+
+Controller->>Business: Parse Business Records
+
+Business->>Business: SIC Lookup
+
+alt Standard SIC
+
+Business-->>Controller: Deterministic Result
+
+else Requires LLM
+
+Business->>Retry: Execute Request
+
+Retry->>Azure: LLM Request
+
+Azure-->>Retry: Response
+
+Retry-->>Business: Final Result
+
+Business-->>Controller: Business JSON
+
+end
 ```
 
 ---
 
 # Engineering Benefits
 
-- Improved production observability.
-- Centralized resilience logic.
-- Easier debugging through full stack traces.
-- Better maintainability via documented thread-local event-loop design.
-- Zero impact on extraction accuracy or business rules.
+The engineering improvements provide several operational advantages.
+
+### Improved Production Observability
+
+- Complete exception tracebacks
+- Better production diagnostics
+- Easier Azure troubleshooting
+
+### Better Reliability
+
+- Dedicated resilience wrapper
+- Retry management isolated from business logic
+- Consistent fallback behaviour
+
+### Improved Maintainability
+
+- Better documentation
+- Cleaner separation of responsibilities
+- Easier future enhancements
+
+### Backward Compatibility
+
+No changes were made to:
+
+- extraction logic
+- parsing behaviour
+- JSON schema
+- controller integration
+- concurrency model
+
+---
+
+# Overall Before vs After
+
+```mermaid
+flowchart LR
+
+A[Previous System]
+B[Direct LLM]
+C[Basic Logging]
+D[Embedded Retry]
+
+E[Updated System]
+F[Execution Wrapper]
+G[Traceback Logging]
+H[Centralized Retry]
+
+A --> B
+A --> C
+A --> D
+
+E --> F
+E --> G
+E --> H
+```
 
 ---
 
 # Conclusion
 
-The updated `compumark_business.py` remains functionally identical from the perspective of extraction. The improvements exclusively strengthen operational resilience and maintainability by introducing a dedicated LLM execution wrapper, improving exception logging, and documenting the thread-local event-loop design.
+The updated **CompuMark Business Extractor** remains functionally identical from the perspective of business extraction.
 
-No changes were made to business extraction logic, JSON schema, concurrency model, SIC processing, or downstream controller integration, ensuring complete backward compatibility while improving production readiness.
+No parsing rules, SIC processing, JSON schema, controller integration, concurrency model, or business logic were modified.
+
+The engineering improvements exclusively strengthen operational resilience by:
+
+- introducing a dedicated LLM execution wrapper,
+- centralizing retry handling,
+- improving exception logging with complete tracebacks,
+- documenting the thread-local event-loop implementation.
+
+These refinements improve production readiness while maintaining complete backward compatibility with the existing extraction pipeline.
